@@ -5,6 +5,7 @@ from kivymd.app import MDApp
 from kivymd.uix.bottomnavigation import MDBottomNavigation, MDBottomNavigationItem
 
 from core.eventbus import EventBus
+from core.i18n import t   # ← 新增
 from data.db import init_db
 from data.seed import seed_if_empty
 from domain.usecases import UseCases
@@ -30,9 +31,8 @@ class App(MDApp):
     def build(self):
         self.title = "LedgerLite"
         Builder.load_string(KV)
-        root = Factory.MDRoot()   # ← 用 Factory 來實例化 KV 宣告的模板
-        init_db()
-        seed_if_empty()
+        root = Factory.MDRoot()
+        init_db(); seed_if_empty()
 
         self.bus = EventBus()
         self.uc = UseCases(self.bus)
@@ -46,12 +46,12 @@ class App(MDApp):
         his = HistoryScreen()
         ana = AnalysisScreen()
 
-        self._add_tab(tabs, "首頁", "home", home)
-        self._add_tab(tabs, "餘額", "wallet", bal)         # 'wallet' 比 'cash' 較穩
-        self._add_tab(tabs, "新增", "plus", add)
-        self._add_tab(tabs, "歷史", "history", his)
-        self._add_tab(tabs, "分析", "chart-line", ana)     # 使用常見 icon 名稱
-
+        # 英文分頁（用 i18n）
+        self._add_tab(tabs, t("TAB_HOME"), "home", home)
+        self._add_tab(tabs, t("TAB_BALANCE"), "wallet", bal)
+        self._add_tab(tabs, t("TAB_ADD"), "plus", add)
+        self._add_tab(tabs, t("TAB_HISTORY"), "history", his)
+        self._add_tab(tabs, t("TAB_ANALYSIS"), "chart-line", ana)
         return root
 
     def _add_tab(self, tabs: MDBottomNavigation, text: str, icon: str, screen):
