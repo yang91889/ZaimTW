@@ -1,34 +1,39 @@
-from kivy.app import App
+from kivy.core.text import LabelBase
+from kivy.resources import resource_add_path
 from kivy.lang import Builder
 from kivy.uix.screenmanager import Screen, ScreenManager
+from kivymd.app import MDApp
+import os
 
-KV = """
-ScreenManager:
-    HomeScreen:
+# 設定字體路徑
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONTS_DIR = os.path.join(BASE_DIR, "assets", "fonts")
+resource_add_path(FONTS_DIR)
 
-<HomeScreen>:
-    name: "home"
-    BoxLayout:
-        orientation: "vertical"
-        padding: "16dp"
-        spacing: "12dp"
-        Label:
-            text: "ZaimTW - Hello!"
-            font_size: "20sp"
-        Button:
-            text: "按我測試"
-            on_release: app.on_press_demo()
-"""
+# 註冊字體 (使用 TTF)
+LabelBase.register(
+    name="NotoSansTC",
+    fn_regular="NotoSansTC-Regular.ttf",
+    fn_bold="NotoSansTC-Bold.ttf",
+)
+
 
 class HomeScreen(Screen):
     pass
 
-class ZaimTWApp(App):
-    def build(self):
-        return Builder.load_string(KV)
 
-    def on_press_demo(self):
-        print("Button pressed!")
+class WindowManager(ScreenManager):
+    pass
+
+
+class DemoApp(MDApp):
+    def build(self):
+        # 修改 KivyMD 全域字體樣式
+        for k, v in self.theme_cls.font_styles.items():
+            v[0] = "NotoSansTC"  # [字體名稱, size, bold, spacing]
+
+        return Builder.load_file("main.kv")
+
 
 if __name__ == "__main__":
-    ZaimTWApp().run()
+    DemoApp().run()

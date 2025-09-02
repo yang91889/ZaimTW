@@ -1,1 +1,25 @@
-# 之後把 KV 介面從 main.py 拆出來用這個檔
+WindowManager:
+    HomeScreen:
+
+<HomeScreen>:
+    name: "home"
+
+    MDBoxLayout:
+        orientation: "vertical"
+        spacing: "20dp"
+        padding: "20dp"
+
+        MDLabel:
+            text: "記帳 APP 測試"
+            halign: "center"
+            font_style: "H5"   # 會自動套用我們的 NotoSansTC
+
+        MDLabel:
+            text: "這裡測試繁體中文，避免豆腐字"
+            halign: "center"
+            theme_text_color: "Primary"
+
+        MDRaisedButton:
+            text: "確定"
+            font_name: "NotoSansTC"
+            pos_hint: {"center_x": 0.5}
