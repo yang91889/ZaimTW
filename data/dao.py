@@ -43,10 +43,26 @@ class TxDao:
         cur = conn.execute(
             """
             SELECT t.id, t.type, t.amount, t.currency, t.date,
-                   IFNULL(c.name,'') AS category
+                   t.category_id, IFNULL(c.name,'') AS category
             FROM [Transaction] t
             LEFT JOIN Category c ON c.id = t.category_id
             ORDER BY t.date DESC, t.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+    def top_categories(self, limit: int = 8) -> List[Dict[str, Any]]:
+        conn = get_conn()
+        cur = conn.execute(
+            """
+            SELECT c.id AS category_id, c.name AS category, COUNT(*) AS cnt
+            FROM [Transaction] t
+            JOIN Category c ON c.id = t.category_id
+            WHERE t.category_id IS NOT NULL
+            GROUP BY t.category_id
+            ORDER BY cnt DESC
             LIMIT ?
             """,
             (limit,),
