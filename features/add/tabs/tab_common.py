@@ -7,7 +7,7 @@ from kivymd.uix.label import MDLabel
 from kivymd.uix.boxlayout import MDBoxLayout
 from data.dao import TxDao
 from core.i18n import t
-from .base import AddTabBase
+from .tab_base import AddTabBase
 
 class CommonTab(AddTabBase):
     def __init__(self, dao: TxDao, record_expense, **kwargs):

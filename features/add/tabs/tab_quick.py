@@ -3,7 +3,7 @@ from kivymd.uix.button import MDRaisedButton
 from kivymd.uix.textfield import MDTextField
 from kivymd.uix.boxlayout import MDBoxLayout
 from core.i18n import t
-from .base import AddTabBase
+from .tab_base import AddTabBase
 
 class QuickTab(AddTabBase):
     def __init__(self, record_expense, **kwargs):
