@@ -9,5 +9,7 @@ from .tab_invoice import InvoiceTab
 from .tab_manual import ManualTab
 from .tab_common import CommonTab
 from .tab_quick import QuickTab
+from .manual import ManualTab
+
 
 __all__ = ["AddTabBase", "InvoiceTab", "ManualTab", "QuickTab", "CommonTab"]
