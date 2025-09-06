@@ -1,3 +1,4 @@
+# features/add/tabs/manual/view.py
 from __future__ import annotations
 
 from kivy.metrics import dp, sp
@@ -6,6 +7,10 @@ from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
+
+from kivy.uix.screenmanager import ScreenManager, SlideTransition
+from .categories.data import CATEGORIES as DEFAULT_CATEGORIES
+from .categories.screen_category import CategorySelectScreen
 
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.gridlayout import MDGridLayout
@@ -16,6 +21,7 @@ from kivymd.uix.menu import MDDropdownMenu
 from ..tab_base import AddTabBase
 from core.i18n import t as _t
 
+from .logic import ManualCalc
 from .currencies import CURRENCIES
 from .widgets.key import Key
 from .widgets.currency_chip import CurrencyChip
@@ -23,28 +29,26 @@ from .widgets.category_chip import CategoryChip
 
 
 class ManualTab(AddTabBase):
-    """手動輸入頁（已拆分 widgets）：4x4 鍵盤 + 底列帽形 + 幣別可選。"""
+    """
+    手動輸入頁：4x4 鍵盤 + 最底列「帽形」(Category/空/空/Backspace)，
+    NEXT 覆蓋底列中間兩格；幣別可選且自動決定小數位。
+    """
 
     # ─────────────────────────────── init ───────────────────────────────
     def __init__(self, record_expense, **kwargs):
         super().__init__(title=_t("ADD_TAB_MANUAL"), **kwargs)
         self._record_expense_cb = record_expense
 
-        # 計算狀態
+        # 狀態（依幣別小數位決定顯示）
         self._mode = "expense"
-        self._buffer = "0"
-        self._left = None
-        self._op = None
-        self._awaiting_rhs = False
+        self._currency = dict(CURRENCIES[0])  # e.g. {"code":"JPY","symbol":"¥","decimals":0}
+        self.calc = ManualCalc(decimals=self._currency.get("decimals", 0))
 
-        # 當前幣別
-        self._currency = dict(CURRENCIES[0])
-
-        # Root layout
+        # Root
         self._root = MDBoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
         self.add_widget(self._root)
 
-        # 1) 模式切換排
+        # 1) 模式
         self._build_modes_row()
 
         # 2) 幣別 + 金額
@@ -53,7 +57,7 @@ class ManualTab(AddTabBase):
         # 3) 鍵盤 + NEXT 覆蓋
         self._build_keypad_stack()
 
-        # 幣別選單
+        # 4) 幣別選單
         self._build_currency_menu()
 
         # 初始化
@@ -62,7 +66,7 @@ class ManualTab(AddTabBase):
         self._relayout()
         self._place_next()
 
-        # 自適應
+        # 自適應（格子或視窗變動時重新定位 NEXT）
         self.grid.bind(size=lambda *_: self._place_next(), pos=lambda *_: self._place_next())
         self.bind(size=lambda *_: self._place_next())
         Window.bind(on_resize=lambda *_: self._place_next())
@@ -80,6 +84,7 @@ class ManualTab(AddTabBase):
         self.btn_trf = MDFlatButton(
             text=_t("TRANSFER"), size_hint=(1, None), height=dp(40),
             pos_hint={"center_y": .5}, on_release=lambda *_: self._set_mode("transfer"))
+
         for b in (self.btn_exp, self.btn_inc, self.btn_trf):
             b.elevation = 0
             if hasattr(b, "elevation_disabled"): b.elevation_disabled = 0
@@ -102,6 +107,7 @@ class ManualTab(AddTabBase):
         self.stack = FloatLayout(size_hint_y=1)
         self._root.add_widget(self.stack)
 
+        # 4x4 keypad
         self.grid = MDGridLayout(
             cols=4,
             spacing=(dp(12), dp(16)),
@@ -111,7 +117,7 @@ class ManualTab(AddTabBase):
         )
         self.stack.add_widget(self.grid)
 
-        # —— 運算符元件索引（用來高亮/取消高亮）——
+        # —— 運算符用於高亮 —— #
         self.op_widgets = {}
         op_symbols = ("+", "−", "×", "÷")
         mark = list(self.theme_cls.primary_color)
@@ -121,89 +127,80 @@ class ManualTab(AddTabBase):
             ("7", self._tap_num), ("8", self._tap_num), ("9", self._tap_num), ("÷", self._tap_op),
             ("4", self._tap_num), ("5", self._tap_num), ("6", self._tap_num), ("×", self._tap_op),
             ("1", self._tap_num), ("2", self._tap_num), ("3", self._tap_num), ("−", self._tap_op),
-            ("00", self._tap_num), ("0", self._tap_num), (".", self._tap_dot), ("+", self._tap_op),
+            ("00", self._tap_double_zero), ("0", self._tap_num), (".", self._tap_dot), ("+", self._tap_op),
         ]
         for text, handler in keys:
             scale = 0.42 if text not in op_symbols else 0.36
-            k = Key(text=text,
-                    on_tap=lambda s, h=handler: h(s),
-                    scale=scale,
-                    mark_rgba=mark)
+            k = Key(text=text, on_tap=lambda s, h=handler: h(s), scale=scale, mark_rgba=mark)
             self.grid.add_widget(k)
             if text in op_symbols:
                 self.op_widgets[text] = k
 
-        # bottom row
+        # 底列： [分類] [空] [空] [退格]
         self.grid.add_widget(self._build_category_cell())
         self.grid.add_widget(Widget())
         self.grid.add_widget(Widget())
         back_cell = AnchorLayout(anchor_x="center", anchor_y="center")
         self.btn_back = MDIconButton(icon="backspace-outline",
                                      size_hint=(None, None), size=(dp(44), dp(44)))
-        self.btn_back.bind(on_release=lambda *_: self._backspace())
+        self.btn_back.bind(on_release=self._tap_backspace)
         back_cell.add_widget(self.btn_back)
         self.grid.add_widget(back_cell)
 
-        # NEXT / '=' overlay
+        # NEXT / '=' 覆蓋在底列中間兩格
         self.next_overlay = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(None, None))
         self.btn_next = MDRaisedButton(text=_t("NEXT"), size_hint=(None, None), height=dp(40))
-        if hasattr(self.btn_next, "adaptive_width"):
-            self.btn_next.adaptive_width = False   # 關掉自動依文字調寬
-        self.btn_next.min_width = dp(140)
-        self.btn_next.bind(on_release=self._on_next_pressed)  # ← 改成統一入口
+        self.btn_next.bind(on_release=self._on_next_pressed)
         self.next_overlay.add_widget(self.btn_next)
         self.stack.add_widget(self.next_overlay)
 
         self._equals_mode = False  # 目前是否顯示 '='
 
-    def _highlight_op(self, symbol: str | None):
-        """圓形高亮對應的運算符；symbol=None 則全部取消。"""
-        for sym, widget in self.op_widgets.items():
-            widget.selected = (sym == symbol) if symbol else False
-
-    def _set_equals_mode(self, on: bool):
-        self._equals_mode = bool(on)
-        self.btn_next.text = "=" if self._equals_mode else _t("NEXT")
-        # 文字更新會先改變內部 texture，下一幀再強制回到我們的寬度
-        Clock.schedule_once(self._size_next_button, 0)
-
-    def _on_next_pressed(self, *_):
-        if self._equals_mode:
-            self._equals()
-        else:
-            self._commit()
-
     def _build_category_cell(self):
         wrap = AnchorLayout(anchor_x="center", anchor_y="center")
-        self.cat_chip = CategoryChip(text=_t("CATEGORY"))
-        self.cat_chip.bind(on_release=lambda *_: self._tap_num("00"))
+        self.cat_chip = CategoryChip(text=_t("CATEGORY"))  # 預設「類別」
+        self.cat_chip.bind(on_release=self._open_category_page)
         wrap.add_widget(self.cat_chip)
-        self._update_category_chip_for_mode()
         return wrap
     
-    def _update_category_chip_for_mode(self):
-        """
-        依目前 self._mode 調整左下角 Category 的圖示與文字：
-        - 支出 expense：餐具圖示 +「CATEGORY」
-        - 收入 income ：收入圖示（cash-plus）+「CATEGORY」
-        - 轉帳 transfer：錢包圖示 +「選擇帳號」
-        """
-        mode = self._mode
-        if mode == "expense":
-            icon = "silverware-fork-knife"
-            text = _t("CATEGORY")
-        elif mode == "income":
-            icon = "cash-plus"
-            text = _t("CATEGORY")
-        else:  # transfer
-            # 若 'wallet' 不可用，改 'wallet-outline' 或 'bank-transfer'
-            icon = "wallet"
-            text = "ACCOUNTS"  # 不用 i18n，因為轉帳通常是跨國語系
+    def _open_category_page(self, *_):
+        sm = self._find_screen_manager()
+        if not sm:
+            return  # 找不到 ScreenManager 就先不開，通常你的 root 會是 SM
 
-        # 動態套用
-        if hasattr(self, "cat_chip"):
-            self.cat_chip.set_icon(icon)
-            self.cat_chip.set_text(text)
+        screen = CategorySelectScreen(
+            name="category_select",
+            on_pick=self._on_category_selected,
+            categories=DEFAULT_CATEGORIES,
+            recents=getattr(self, "_recent_category_ids", [101, 102, 103]),  # 先給幾個常用
+        )
+        sm.add_widget(screen)
+        # 優雅換頁
+        old = sm.transition
+        sm.transition = SlideTransition(direction="left", duration=0.18)
+        sm.current = "category_select"
+        sm.transition = old
+
+    def _on_category_selected(self, cat: dict):
+        # 記住選擇
+        self._selected_category_id = cat["id"]
+        self._recent_category_ids = [cat["id"]] + [i for i in getattr(self, "_recent_category_ids", []) if i != cat["id"]]
+        self._recent_category_ids = self._recent_category_ids[:8]
+
+        # 更新 chip 視覺
+        try:
+            self.cat_chip._icon.icon = cat.get("icon", "shape")
+            self.cat_chip._label.text = cat["name"]
+        except Exception:
+            pass
+        self._render()
+
+    def _find_screen_manager(self):
+        w = self
+        from kivy.uix.screenmanager import ScreenManager
+        while w is not None and not isinstance(w, ScreenManager):
+            w = w.parent
+        return w
 
     # ─────────────────────────── currency menu ──────────────────────────
     def _build_currency_menu(self):
@@ -229,8 +226,13 @@ class ManualTab(AddTabBase):
         self.currency_menu.open()
 
     def _pick_currency(self, code: str, symbol: str):
-        self._currency = {"code": code, "symbol": symbol}
+        # 切幣別：更新 chip、顯示小數位、重排現值
+        cur = next((c for c in CURRENCIES if c["code"] == code), {"code": code, "symbol": symbol, "decimals": 0})
+        self._currency = cur
         self.currency_chip.set_currency(code, symbol)
+        self.calc.decimals = cur.get("decimals", 0)
+        # 以新位數重排 buffer
+        self._render()
         if hasattr(self, "currency_menu"):
             self.currency_menu.dismiss()
 
@@ -255,10 +257,11 @@ class ManualTab(AddTabBase):
 
         self.next_overlay.pos = (x, y)
         self.next_overlay.size = (cw * 2 + sx, ch)
-        self.btn_next.width = min(dp(420), max(dp(140), self.next_overlay.width * 0.92))
-        self.btn_next.height = min(dp(56), max(dp(36), self.next_overlay.height * 0.70))
 
-        # 同步左下「分類/Accounts」chip 的寬度為一個 cell 的寬
+        # 固定 NEXT/＝ 的大小（避免文字長度影響）
+        self._size_next_button()
+
+        # 讓 category chip 視覺寬度對齊左下那格
         if hasattr(self, "cat_chip"):
             self.cat_chip.width = cw
 
@@ -288,7 +291,7 @@ class ManualTab(AddTabBase):
         fs = max(sp(28), min(sp(64), base * 0.075))
         self.lbl_amount.font_size = fs
 
-    # ────────────────────────── mode & compute ─────────────────────────
+    # ────────────────────────── mode & visuals ─────────────────────────
     def _set_mode(self, m: str):
         self._mode = m
 
@@ -308,56 +311,34 @@ class ManualTab(AddTabBase):
             if hasattr(btn, "elevation_disabled"): btn.elevation_disabled = 0
             if hasattr(btn, "shadow_color"): btn.shadow_color = (0, 0, 0, 0)
 
-        self._update_category_chip_for_mode()
+        # 切換模式時，同步左下角圖示與文字
+        # 支出: 餐具 + CATEGORY；收入: income 圖示 + CATEGORY；轉帳: 錢包 + "Accounts"
+        ICONS_BY_MODE = {
+            "expense": ("silverware-fork-knife", _t("CATEGORY")),
+            "income":  ("cash-plus",             _t("CATEGORY")),
+            "transfer":("wallet",                _t("ACCOUNTS")),  # 你說用英文就好
+        }
+        icon, caption = ICONS_BY_MODE.get(m, ("silverware-fork-knife", _t("CATEGORY")))
+        try:
+            # 直接設定 CategoryChip 的內部控件
+            self.cat_chip._icon.icon = icon
+            self.cat_chip._label.text = caption
+        except Exception:
+            pass
 
-    # --- 修改：統一由 _render 來套用規範化 ---
-    def _render(self):
-        self._buffer = self._normalize_buffer(self._buffer)
-        self.lbl_amount.text = self._buffer
+    def _highlight_op(self, symbol: str | None):
+        """圓形高亮對應的運算符；symbol=None 則全部取消。"""
+        for sym, widget in self.op_widgets.items():
+            # 需要你的 widgets/key.py 支援 selected 屬性與 mark_rgba
+            try:
+                widget.selected = (sym == symbol) if symbol else False
+            except Exception:
+                pass
 
-    # --- 新增：將 self._buffer 規範化 ---
-    def _normalize_buffer(self, s: str, *, for_backspace: bool = False) -> str:
-        s = (s or "").strip()
-        # 只有符號或空字串 → 0
-        if s in ("", "-", "+"):
-            return "0"
-        # 僅在退格情境下才把尾巴孤單的小數點收掉（1. -> 1）
-        if for_backspace and s.endswith("."):
-            s = s[:-1] or "0"
-
-        neg = s.startswith("-")
-        body = s[1:] if neg else s
-
-        if "." in body:
-            int_part, frac = body.split(".", 1)
-            int_part = (int_part.lstrip("0") or "0")
-            # 不在退格時：允許處於 0. 的中間輸入狀態
-            if not for_backspace and body.endswith("."):
-                body = int_part + "."
-            else:
-                body = int_part + ("." + frac if frac != "" else "")
-        else:
-            body = body.lstrip("0") or "0"
-
-        if body == "0":
-            neg = False  # -0 → 0
-
-        return ("-" if neg else "") + body
-
-    # —— 新增：等號計算 ————————————————————————————————————————
-    def _equals(self):
-        cur = self._parse()
-        if self._op is None or self._left is None:
-            self._set_equals_mode(False)
-            self._highlight_op(None)
-            return
-        res = self._calc(self._left, cur, self._op)
-        self._buffer = self._format_amount(res)
-        self._left, self._op = None, None
-        self._awaiting_rhs = False
-        self._render()
-        self._highlight_op(None)
-        self._set_equals_mode(False)
+    def _set_equals_mode(self, on: bool):
+        self._equals_mode = bool(on)
+        self.btn_next.text = "=" if self._equals_mode else _t("NEXT")
+        Clock.schedule_once(lambda *_: self._size_next_button(), 0)
 
     def _size_next_button(self, *_):
         # 依 overlay 大小固定寬高，避免被文字長度影響
@@ -366,112 +347,72 @@ class ManualTab(AddTabBase):
         self.btn_next.width  = min(dp(420), max(dp(140), w))
         self.btn_next.height = min(dp(56),  max(dp(36),  h))
 
-    # --- 修改：數字鍵 ---
-    def _tap_num(self, token: str):
-        if self._awaiting_rhs:
-            self._buffer = "0" if token == "00" else token
-            self._awaiting_rhs = False
-        else:
-            if self._buffer == "0" and token not in (".", "00"):
-                self._buffer = token
-            elif token == "00":
-                self._buffer += "00"
-            else:
-                self._buffer += token
-        self._render()
+    # ────────────────────────── render & events ────────────────────────
+    def _render(self):
+        self.lbl_amount.text = self.calc.buffer
 
-    # --- 修改：小數點鍵 ---
-    def _tap_dot(self, _):
-        b = self._buffer or "0"
-        # 已經有小數點就不再加
-        if "." in b:
-            return
-        # 空字串或只有 +/- 時，補成 0.
-        if b in ("", "-", "+"):
-            b = "0"
-        # 變成 0. 或 n.
-        self._buffer = b + "."
-        self._render()
+    def _on_next_pressed(self, *_):
+        if self._equals_mode:
+            self.calc.equals()
+            self._highlight_op(None)
+            self._set_equals_mode(False)
+            self._render()
+        else:
+            self._commit()
+
+    # 數字 / 00 / . / 運算子 / 退格
+    def _tap_num(self, n, *_):
+        self.calc.input_digit(str(n))
+        self._refresh_amount_label()
+    
+    def _tap_double_zero(self, *_):
+        self.calc.input_double_zero()
+        self._refresh_amount_label()
+
+    def _tap_dot(self, *_):
+        self.calc.input_dot()
+        self._refresh_amount_label()
 
     def _tap_op(self, sym: str):
         op = {"+": "+", "−": "-", "×": "*", "÷": "/"}[sym]
-
-        cur = self._parse()
-
-        if self._op is None:
-            # 第一次按運算符：把左運算元定下來
-            self._left = cur
-        elif not self._awaiting_rhs:
-            # 已有左運算元且右運算元已輸入 → 先把舊運算算完
-            self._left = self._calc(self._left, cur, self._op)
-            self._buffer = self._format_amount(self._left)
-            self._render()
-        else:
-            # 正在等右運算元（使用者只是換了一個運算子）→ 什麼也不算
-            pass
-
-        self._op = op
-        self._awaiting_rhs = True            # 進入等右運算元狀態
-        # 顯示仍維持 left，不把畫面改成 "0"
-        self._highlight_op(sym)
-        self._set_equals_mode(True)
-
-    def _backspace(self):
-        b = self._buffer or "0"
-        if len(b) <= 1:
-            self._buffer = "0"
-        else:
-            b = b[:-1]
-            self._buffer = self._normalize_buffer(b, for_backspace=True)
+        self.calc.op_press(op)
+        self._highlight_op(sym)                 # 視覺高亮
+        self._set_equals_mode(self.calc.equals_mode)
         self._render()
 
-    def _parse(self) -> float:
-        try:
-            return float(self._buffer)
-        except Exception:
-            return 0.0
+    def _refresh_amount_label(self):
+        # 這裡請直接顯示 buffer
+        self.lbl_amount.text = self.calc.buffer
 
-    def _calc(self, a: float, b: float, op: str) -> float:
-        try:
-            if op == "+": return a + b
-            if op == "-": return a - b
-            if op == "*": return a * b
-            if op == "/": return a / b if b != 0 else a
-        except Exception:
-            pass
-        return b
+    def _tap_backspace(self, *_):
+        self.calc.backspace()
+        self._refresh_amount_label()
 
-    def _apply_pending(self, op_switch: str | None):
-        cur = self._parse()
-        if self._op is None:
-            self._left = cur
+    def _tap_next_or_equals(self, *_):
+        if self.calc.equals_mode:
+            shown = self.calc.equals()  # 這裡會用 _fmt_amount(decimals)
         else:
-            self._left = self._calc(self._left, cur, self._op)
-            self._buffer = self._format_amount(self._left)
-            self._render()
-        self._op = op_switch
-        self._buffer = "0"
-
-    # 送出後重置狀態
+            shown = self.calc._fmt_amount(float(self.calc.buffer or "0"))
+        self.lbl_amount.text = shown
+        # 然後進入下一步（類別/帳戶等頁面）
+    
+    # ───────────────────────────── commit ──────────────────────────────
     def _commit(self):
-        val = self._parse()
-        if self._op is not None and self._left is not None:
-            val = self._calc(self._left, val, self._op)
-        amount = abs(val)
+        """送出記帳（保持你原本『下一步』邏輯）"""
+        # 等號未按下時也要完成 pending 計算
+        if self.calc.op is not None and self.calc.left is not None:
+            self.calc.equals()
+
+        amount = abs(self.calc._to_float(self.calc.buffer))
         sign = -1 if self._mode == "expense" else 1
         final = amount * sign
+
         if callable(self._record_expense_cb):
+            # TODO: 若你的 usecase/DAO 支援幣別，可把 self._currency["code"] 一起傳下去
             self._record_expense_cb(final, category_id=1)
-        self._buffer, self._left, self._op = "0", None, None
-        self._awaiting_rhs = False
+
+        # 重置狀態 / 視覺
+        self.calc.reset()
         self._highlight_op(None)
         self._set_equals_mode(False)
         self._render()
-
-    def _format_amount(self, v: float) -> str:
-        if abs(v) < 1e-12:
-            v = 0.0
-        s = f"{v:.2f}".rstrip("0").rstrip(".")
-        if s in ("-0", "-0.", "-0.0"):
-            s = "0"
-        return s or "0"

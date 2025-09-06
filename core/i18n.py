@@ -31,6 +31,19 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "ADD": "Add",
         "DUPLICATE": "Duplicate",
         "NO_DATA": "No data",
+
+        "CATEGORY_SELECT":"Category Select",
+        "SEARCH_CATEGORY":"Search category...",
+        "RECENTLY_USED":"Recently Used",
+        "ALL_CATEGORIES":"All Categories",
+        "NO_MATCHES":"No matches",
+        
+        "EXPENSE": "Expense",
+        "INCOME": "Income",
+        "TRANSFER": "Transfer",
+        "CATEGORY": "Category",
+        "ACCOUNTS": "Accounts",
+        "NEXT": "NEXT",
     },
     "zh-TW": {
         "TAB_HOME": "首頁",
@@ -58,6 +71,19 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "ADD": "加入",
         "DUPLICATE": "複製",
         "NO_DATA": "沒有資料",
+
+        "CATEGORY_SELECT":"選擇類別",
+        "SEARCH_CATEGORY":"搜尋類別...",
+        "RECENTLY_USED":"最近使用",
+        "ALL_CATEGORIES":"全部類別",
+        "NO_MATCHES":"沒有符合的結果",
+
+        "EXPENSE": "支出",
+        "INCOME": "收入",
+        "TRANSFER": "轉帳",
+        "CATEGORY": "類別",
+        "ACCOUNTS": "帳戶",
+        "NEXT": "下一步",
     },
     "ja": {
         "TAB_HOME": "ホーム",
@@ -85,6 +111,19 @@ _STRINGS: Dict[str, Dict[str, str]] = {
         "ADD": "追加",
         "DUPLICATE": "複製",
         "NO_DATA": "データなし",
+
+        "CATEGORY_SELECT":"カテゴリ選択",
+        "SEARCH_CATEGORY":"カテゴリを検索…",
+        "RECENTLY_USED":"最近使った",
+        "ALL_CATEGORIES":"一覧",
+        "NO_MATCHES":"該当がありません",
+
+        "EXPENSE": "支出",
+        "INCOME": "収入",
+        "TRANSFER": "振替",
+        "CATEGORY": "カテゴリ",
+        "ACCOUNTS": "口座",
+        "NEXT": "次へ",
     },
 }
 

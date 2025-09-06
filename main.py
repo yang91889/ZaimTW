@@ -48,7 +48,7 @@ class App(MDApp):
 
         # 英文分頁（用 i18n）
         self._add_tab(tabs, t("TAB_HOME"), "home", home)
-        self._add_tab(tabs, t("TAB_BALANCE"), "wallet", bal)
+        self._add_tab(tabs, t("TAB_BALANCE"), "credit-card-multiple-outline", bal)
         self._add_tab(tabs, t("TAB_ADD"), "plus", add)
         self._add_tab(tabs, t("TAB_HISTORY"), "history", his)
         self._add_tab(tabs, t("TAB_ANALYSIS"), "chart-line", ana)
