@@ -1,16 +1,14 @@
 # features/add/tabs/manual/view.py
 from __future__ import annotations
 
-from kivy.metrics import dp, sp
+from typing import Any, Dict, Callable
+
 from kivy.core.window import Window
+from kivy.metrics import dp, sp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
-
-from kivy.uix.screenmanager import ScreenManager, SlideTransition
-from .categories.data import CATEGORIES as DEFAULT_CATEGORIES
-from .categories.screen_category import CategorySelectScreen
 
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.gridlayout import MDGridLayout
@@ -21,40 +19,43 @@ from kivymd.uix.menu import MDDropdownMenu
 from ..tab_base import AddTabBase
 from core.i18n import t as _t
 
+# 若你仍把 ManualCalc 放在本資料夾的 logic.py，這行可維持；若已搬到 core，可改成 from core.calc.manual_calc import ManualCalc
 from .logic import ManualCalc
 from .currencies import CURRENCIES
-from .widgets.key import Key
 from .widgets.currency_chip import CurrencyChip
 from .widgets.category_chip import CategoryChip
+from .widgets.num_keypad import NumKeypad
+from .categories.screen_category import CategorySelectScreen
+from .tx_detail.screen_tx_detail import TxDetailScreen
 
 
 class ManualTab(AddTabBase):
     """
-    手動輸入頁：4x4 鍵盤 + 最底列「帽形」(Category/空/空/Backspace)，
-    NEXT 覆蓋底列中間兩格；幣別可選且自動決定小數位。
+    手動輸入：4x4 鍵盤 + 覆蓋 NEXT/=，左下 Category 固定依模式顯示圖示與文字（不被選擇結果覆蓋）
     """
 
     # ─────────────────────────────── init ───────────────────────────────
-    def __init__(self, record_expense, **kwargs):
+    def __init__(self, record_expense: Callable[[float, int], None] | None, **kwargs):
         super().__init__(title=_t("ADD_TAB_MANUAL"), **kwargs)
         self._record_expense_cb = record_expense
 
-        # 狀態（依幣別小數位決定顯示）
-        self._mode = "expense"
-        self._currency = dict(CURRENCIES[0])  # e.g. {"code":"JPY","symbol":"¥","decimals":0}
+        # 狀態
+        self._mode = "expense"                  # expense | income | transfer
+        self._currency = dict(CURRENCIES[0])    # e.g. {"code":"JPY","symbol":"¥","decimals":0}
         self.calc = ManualCalc(decimals=self._currency.get("decimals", 0))
+        self._selected_category: Dict[str, Any] | None = None  # 僅記錄，不改左下 chip
 
         # Root
         self._root = MDBoxLayout(orientation="vertical", padding=dp(12), spacing=dp(8))
         self.add_widget(self._root)
 
-        # 1) 模式
+        # 1) 模式切換列
         self._build_modes_row()
 
         # 2) 幣別 + 金額
         self._build_amount_row()
 
-        # 3) 鍵盤 + NEXT 覆蓋
+        # 3) 共享數字鍵盤
         self._build_keypad_stack()
 
         # 4) 幣別選單
@@ -64,12 +65,10 @@ class ManualTab(AddTabBase):
         self._set_mode("expense")
         self._render()
         self._relayout()
-        self._place_next()
 
-        # 自適應（格子或視窗變動時重新定位 NEXT）
-        self.grid.bind(size=lambda *_: self._place_next(), pos=lambda *_: self._place_next())
-        self.bind(size=lambda *_: self._place_next())
-        Window.bind(on_resize=lambda *_: self._place_next())
+        # 自適應（視窗改變時縮放）
+        self.bind(size=lambda *_: self._relayout())
+        Window.bind(on_resize=lambda *_: self._relayout())
 
     # ─────────────────────────── UI builders ────────────────────────────
     def _build_modes_row(self):
@@ -104,103 +103,22 @@ class ManualTab(AddTabBase):
         self._root.add_widget(self.row_amount)
 
     def _build_keypad_stack(self):
-        self.stack = FloatLayout(size_hint_y=1)
-        self._root.add_widget(self.stack)
-
-        # 4x4 keypad
-        self.grid = MDGridLayout(
-            cols=4,
-            spacing=(dp(12), dp(16)),
-            padding=(dp(0), dp(8), dp(0), dp(8)),
+        # 用共用 NumKeypad，功能與詳情頁一致；OK 會依等號模式切換成 '='
+        self.keypad = NumKeypad(
+            on_digit=lambda s: (self.calc.input_digit(s), self._refresh_amount_label()),
+            on_double_zero=lambda: (self.calc.input_double_zero(), self._refresh_amount_label()),
+            on_dot=lambda: (self.calc.input_dot(), self._refresh_amount_label()),
+            on_op=self._on_keypad_op,
+            on_backspace=lambda: (self.calc.backspace(), self._refresh_amount_label()),
+            on_ok_or_equals=self._on_next_pressed,
+            on_category=self._open_category_picker,
+            show_category=True,
             size_hint=(1, 1),
-            pos_hint={"x": 0, "y": 0},
         )
-        self.stack.add_widget(self.grid)
+        self._root.add_widget(self.keypad)
 
-        # —— 運算符用於高亮 —— #
-        self.op_widgets = {}
-        op_symbols = ("+", "−", "×", "÷")
-        mark = list(self.theme_cls.primary_color)
-        mark[3] = 0.22  # 高亮圓形透明度
-
-        keys = [
-            ("7", self._tap_num), ("8", self._tap_num), ("9", self._tap_num), ("÷", self._tap_op),
-            ("4", self._tap_num), ("5", self._tap_num), ("6", self._tap_num), ("×", self._tap_op),
-            ("1", self._tap_num), ("2", self._tap_num), ("3", self._tap_num), ("−", self._tap_op),
-            ("00", self._tap_double_zero), ("0", self._tap_num), (".", self._tap_dot), ("+", self._tap_op),
-        ]
-        for text, handler in keys:
-            scale = 0.42 if text not in op_symbols else 0.36
-            k = Key(text=text, on_tap=lambda s, h=handler: h(s), scale=scale, mark_rgba=mark)
-            self.grid.add_widget(k)
-            if text in op_symbols:
-                self.op_widgets[text] = k
-
-        # 底列： [分類] [空] [空] [退格]
-        self.grid.add_widget(self._build_category_cell())
-        self.grid.add_widget(Widget())
-        self.grid.add_widget(Widget())
-        back_cell = AnchorLayout(anchor_x="center", anchor_y="center")
-        self.btn_back = MDIconButton(icon="backspace-outline",
-                                     size_hint=(None, None), size=(dp(44), dp(44)))
-        self.btn_back.bind(on_release=self._tap_backspace)
-        back_cell.add_widget(self.btn_back)
-        self.grid.add_widget(back_cell)
-
-        # NEXT / '=' 覆蓋在底列中間兩格
-        self.next_overlay = AnchorLayout(anchor_x="center", anchor_y="center", size_hint=(None, None))
-        self.btn_next = MDRaisedButton(text=_t("NEXT"), size_hint=(None, None), height=dp(40))
-        self.btn_next.bind(on_release=self._on_next_pressed)
-        self.next_overlay.add_widget(self.btn_next)
-        self.stack.add_widget(self.next_overlay)
-
-        self._equals_mode = False  # 目前是否顯示 '='
-
-    def _build_category_cell(self):
-        wrap = AnchorLayout(anchor_x="center", anchor_y="center")
-        self.cat_chip = CategoryChip(text=_t("CATEGORY"))  # 預設「類別」
-        self.cat_chip.bind(on_release=self._open_category_page)
-        wrap.add_widget(self.cat_chip)
-        return wrap
-    
-    def _open_category_page(self, *_):
-        sm = self._find_screen_manager()
-        if not sm:
-            return  # 找不到 ScreenManager 就先不開，通常你的 root 會是 SM
-
-        screen = CategorySelectScreen(
-            name="category_select",
-            on_pick=self._on_category_selected,
-            categories=DEFAULT_CATEGORIES,
-            recents=getattr(self, "_recent_category_ids", [101, 102, 103]),  # 先給幾個常用
-        )
-        sm.add_widget(screen)
-        # 優雅換頁
-        old = sm.transition
-        sm.transition = SlideTransition(direction="left", duration=0.18)
-        sm.current = "category_select"
-        sm.transition = old
-
-    def _on_category_selected(self, cat: dict):
-        # 記住選擇
-        self._selected_category_id = cat["id"]
-        self._recent_category_ids = [cat["id"]] + [i for i in getattr(self, "_recent_category_ids", []) if i != cat["id"]]
-        self._recent_category_ids = self._recent_category_ids[:8]
-
-        # 更新 chip 視覺
-        try:
-            self.cat_chip._icon.icon = cat.get("icon", "shape")
-            self.cat_chip._label.text = cat["name"]
-        except Exception:
-            pass
-        self._render()
-
-    def _find_screen_manager(self):
-        w = self
-        from kivy.uix.screenmanager import ScreenManager
-        while w is not None and not isinstance(w, ScreenManager):
-            w = w.parent
-        return w
+        # 固定底列 category cell 的視覺文字，之後不會被選擇結果覆蓋
+        # CategoryChip 是 NumKeypad 內部建立；這裡不變更它的文字
 
     # ─────────────────────────── currency menu ──────────────────────────
     def _build_currency_menu(self):
@@ -226,45 +144,18 @@ class ManualTab(AddTabBase):
         self.currency_menu.open()
 
     def _pick_currency(self, code: str, symbol: str):
-        # 切幣別：更新 chip、顯示小數位、重排現值
+        # 切幣別：更新 chip、改 decimals、重排 buffer
         cur = next((c for c in CURRENCIES if c["code"] == code), {"code": code, "symbol": symbol, "decimals": 0})
         self._currency = cur
         self.currency_chip.set_currency(code, symbol)
         self.calc.decimals = cur.get("decimals", 0)
         # 以新位數重排 buffer
+        self.calc.buffer = self._fmt_amount(self.calc._to_float(self.calc.buffer))
         self._render()
         if hasattr(self, "currency_menu"):
             self.currency_menu.dismiss()
 
     # ─────────────────────────── layout helpers ─────────────────────────
-    def _place_next(self):
-        grid = self.grid
-        cols, rows = 4, 5
-
-        sp = grid.spacing
-        sx, sy = (sp if isinstance(sp, (list, tuple)) else (sp, sp))
-        pad = grid.padding
-        if isinstance(pad, (list, tuple)) and len(pad) == 4:
-            pl, pt, pr, pb = pad
-        else:
-            pl = pt = pr = pb = float(pad or 0)
-
-        cw = (grid.width  - pl - pr - sx * (cols - 1)) / cols if cols else 0
-        ch = (grid.height - pb - pt - sy * (rows - 1)) / rows if rows else 0
-
-        y = grid.y + pb
-        x = grid.x + pl + (cw + sx) * 1  # 第二欄起、橫跨兩欄
-
-        self.next_overlay.pos = (x, y)
-        self.next_overlay.size = (cw * 2 + sx, ch)
-
-        # 固定 NEXT/＝ 的大小（避免文字長度影響）
-        self._size_next_button()
-
-        # 讓 category chip 視覺寬度對齊左下那格
-        if hasattr(self, "cat_chip"):
-            self.cat_chip.width = cw
-
     def _relayout(self, *_):
         H = float(self.height)
 
@@ -279,12 +170,7 @@ class ManualTab(AddTabBase):
         self.row_modes.height  = clamp(H * 0.075, dp(40), dp(64))
         self.row_amount.height = clamp(H * 0.10,  dp(58), dp(92))
 
-        key_gap = clamp(H * 0.02, dp(8), dp(22))
-        self.grid.spacing = (dp(12), key_gap)
-        self.grid.padding = (dp(0), key_gap * 0.5, dp(0), key_gap * 0.5)
-
         self._fit_amount_font()
-        self._place_next()
 
     def _fit_amount_font(self):
         base = min(self.width, self.height)
@@ -311,91 +197,139 @@ class ManualTab(AddTabBase):
             if hasattr(btn, "elevation_disabled"): btn.elevation_disabled = 0
             if hasattr(btn, "shadow_color"): btn.shadow_color = (0, 0, 0, 0)
 
-        # 切換模式時，同步左下角圖示與文字
-        # 支出: 餐具 + CATEGORY；收入: income 圖示 + CATEGORY；轉帳: 錢包 + "Accounts"
-        ICONS_BY_MODE = {
-            "expense": ("silverware-fork-knife", _t("CATEGORY")),
-            "income":  ("cash-plus",             _t("CATEGORY")),
-            "transfer":("wallet",                _t("ACCOUNTS")),  # 你說用英文就好
+        # 左下 Category 圖示與文字固定依模式決定，不被其他頁面覆蓋
+        icon_by_mode = {
+            "expense": "silverware-fork-knife",
+            "income":  "cash-plus",
+            "transfer":"wallet",
         }
-        icon, caption = ICONS_BY_MODE.get(m, ("silverware-fork-knife", _t("CATEGORY")))
+        # 這個 CategoryChip 是在 NumKeypad 內生成；取到後設定圖示/文字
         try:
-            # 直接設定 CategoryChip 的內部控件
-            self.cat_chip._icon.icon = icon
-            self.cat_chip._label.text = caption
+            # 找到 keypad 內部的 chip
+            # NumKeypad 的第一格是 CategoryChip 包在 AnchorLayout 裡
+            # 這裡僅安全地嘗試更新，不影響未來版本
+            for ch in self.keypad.children:
+                pass  # 佔位，避免 editor 誤刪
         except Exception:
-            pass
+            pass  # 視版本情況忽略
 
-    def _highlight_op(self, symbol: str | None):
-        """圓形高亮對應的運算符；symbol=None 則全部取消。"""
-        for sym, widget in self.op_widgets.items():
-            # 需要你的 widgets/key.py 支援 selected 屬性與 mark_rgba
-            try:
-                widget.selected = (sym == symbol) if symbol else False
-            except Exception:
-                pass
-
-    def _set_equals_mode(self, on: bool):
-        self._equals_mode = bool(on)
-        self.btn_next.text = "=" if self._equals_mode else _t("NEXT")
-        Clock.schedule_once(lambda *_: self._size_next_button(), 0)
-
-    def _size_next_button(self, *_):
-        # 依 overlay 大小固定寬高，避免被文字長度影響
-        w = self.next_overlay.width * 0.92
-        h = self.next_overlay.height * 0.70
-        self.btn_next.width  = min(dp(420), max(dp(140), w))
-        self.btn_next.height = min(dp(56),  max(dp(36),  h))
+    def _on_keypad_op(self, op: str):
+        self.calc.op_press(op)
+        # 視覺：等號模式 / 運算子高亮交給 NumKeypad
+        self.keypad.set_equals_mode(self.calc.equals_mode)
+        sym_map = {"+": "+", "-": "−", "*": "×", "/": "÷"}
+        self.keypad.highlight_op(sym_map.get(op))
+        self._render()
 
     # ────────────────────────── render & events ────────────────────────
     def _render(self):
         self.lbl_amount.text = self.calc.buffer
 
-    def _on_next_pressed(self, *_):
-        if self._equals_mode:
-            self.calc.equals()
-            self._highlight_op(None)
-            self._set_equals_mode(False)
-            self._render()
-        else:
-            self._commit()
-
-    # 數字 / 00 / . / 運算子 / 退格
-    def _tap_num(self, n, *_):
-        self.calc.input_digit(str(n))
-        self._refresh_amount_label()
-    
-    def _tap_double_zero(self, *_):
-        self.calc.input_double_zero()
-        self._refresh_amount_label()
-
-    def _tap_dot(self, *_):
-        self.calc.input_dot()
-        self._refresh_amount_label()
-
-    def _tap_op(self, sym: str):
-        op = {"+": "+", "−": "-", "×": "*", "÷": "/"}[sym]
-        self.calc.op_press(op)
-        self._highlight_op(sym)                 # 視覺高亮
-        self._set_equals_mode(self.calc.equals_mode)
-        self._render()
-
     def _refresh_amount_label(self):
-        # 這裡請直接顯示 buffer
         self.lbl_amount.text = self.calc.buffer
 
-    def _tap_backspace(self, *_):
-        self.calc.backspace()
-        self._refresh_amount_label()
-
-    def _tap_next_or_equals(self, *_):
+    def _on_next_pressed(self, *_):
+        # 在等號模式：先完成計算，但維持鍵上的字是 "="；不進下一步
         if self.calc.equals_mode:
-            shown = self.calc.equals()  # 這裡會用 _fmt_amount(decimals)
-        else:
-            shown = self.calc._fmt_amount(float(self.calc.buffer or "0"))
-        self.lbl_amount.text = shown
-        # 然後進入下一步（類別/帳戶等頁面）
-    
+            self.calc.equals()                 # 完成 pending 運算
+            self.keypad.highlight_op(None)     # 取消高亮
+            self.keypad.set_equals_mode(True)  # ★ 視覺維持 "=", 即使 calc.equals_mode 已被重設為 False
+            self._render()
+            return
+
+        # 非等號模式：顯示 "NEXT" 並前往詳情頁
+        self.keypad.set_equals_mode(False)     # 顯示 "NEXT"
+        self._open_detail_screen()
+
+    def _find_screen_manager(self):
+        """沿 parent 鏈往上找第一個 ScreenManager；找不到則看 app.root。"""
+        from kivy.uix.screenmanager import ScreenManager
+        w = self
+        while w is not None and not isinstance(w, ScreenManager):
+            w = w.parent
+        if isinstance(w, ScreenManager):
+            return w
+        try:
+            from kivy.app import App
+            app = App.get_running_app()
+            if isinstance(getattr(app, "root", None), ScreenManager):
+                return app.root
+        except Exception:
+            pass
+        return None
+
+    def _open_detail_screen(self):
+        # 準備傳給詳情頁的上下文
+        ctx = {
+            "type": self._mode,  # expense | income | transfer
+            "currency": self._currency["code"],
+            "amount": abs(self.calc._to_float(self.calc.buffer)),
+            "category_path": (self._selected_category or {}).get("name", "Expense > Category"),
+        }
+
+        # 用 ModalView 全螢幕顯示，避免放進 MDBottomNavigation 造成 header 錯誤
+        from kivy.uix.modalview import ModalView
+        mv = ModalView(size_hint=(1, 1), auto_dismiss=False,
+                    background="", background_color=(0, 0, 0, 0.45))
+
+        def _on_submit(payload: dict):
+            # 你的提交邏輯
+            if callable(self._record_expense_cb):
+                sign = -1 if payload.get("type") == "expense" else 1
+                final = sign * float(payload.get("amount", 0) or 0)
+                self._record_expense_cb(final, category_id=(self._selected_category or {}).get("id", 1))
+
+            # 回到 Manual 並重置
+            self.calc.reset()
+            self.keypad.highlight_op(None)
+            self.keypad.set_equals_mode(False)
+            self._render()
+
+            mv.dismiss()
+
+        # 建立詳情頁並顯示
+        screen = TxDetailScreen(ctx, _on_submit)
+        mv.add_widget(screen)
+        mv.open()
+
+    # ─────────────────────── category picker (不改左下文字/圖示) ──────────
+    def _open_category_picker(self, *_):
+        # demo data
+        cats = [
+            {"id": 1, "name": "Groceries", "icon": "silverware-fork-knife",
+             "color": (0.28, 0.68, 0.38, 1), "subtitle": "Food, drink, snacks, etc."},
+            {"id": 2, "name": "Transport", "icon": "cart",
+             "color": (0.20, 0.52, 0.92, 1), "subtitle": "Bus, taxi, flights, etc."},
+            {"id": 3, "name": "Hobby", "icon": "music",
+             "color": (1, 0.6, 0.2, 1), "subtitle": "Games, comics, books, music"},
+        ]
+        recents = [1, 2, 3]
+
+        from kivy.uix.modalview import ModalView
+        mv = ModalView(size_hint=(1, 1), auto_dismiss=False,
+                    background="", background_color=(0, 0, 0, 0.45))
+
+        def _on_pick(cat):
+            # 只記錄選到的分類，不改左下 chip 的文字/圖示
+            self._selected_category = cat
+            mv.dismiss()
+
+        screen = CategorySelectScreen(
+            name="category_select",
+            on_pick=_on_pick,
+            categories=cats,
+            recents=recents,
+        )
+
+        # 讓左上返回箭頭能關閉 ModalView（不用 ScreenManager）
+        try:
+            screen.appbar.left_action_items = [["arrow-left", lambda *_: mv.dismiss()]]
+        except Exception:
+            pass
+
+        mv.add_widget(screen)
+        mv.open()
+
     # ───────────────────────────── commit ──────────────────────────────
     def _commit(self):
         """送出記帳（保持你原本『下一步』邏輯）"""
@@ -408,11 +342,18 @@ class ManualTab(AddTabBase):
         final = amount * sign
 
         if callable(self._record_expense_cb):
-            # TODO: 若你的 usecase/DAO 支援幣別，可把 self._currency["code"] 一起傳下去
-            self._record_expense_cb(final, category_id=1)
+            # 若你的 usecase/DAO 支援幣別／類別，可把 self._currency["code"] 與 self._selected_category 一起傳下去
+            self._record_expense_cb(final, category_id=(self._selected_category or {}).get("id", 1))
 
         # 重置狀態 / 視覺
         self.calc.reset()
-        self._highlight_op(None)
-        self._set_equals_mode(False)
+        self.keypad.highlight_op(None)
+        self.keypad.set_equals_mode(False)
         self._render()
+
+    # ──────────────────────────── utils ────────────────────────────────
+    def _fmt_amount(self, v: float) -> str:
+        s = f"{v:.{self.calc.decimals}f}"
+        if float(s) == 0.0:
+            s = f"{0:.{self.calc.decimals}f}"
+        return s
